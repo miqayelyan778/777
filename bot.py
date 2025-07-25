@@ -3,7 +3,7 @@ import json
 import requests
 import logging
 from datetime import datetime
-from telegram import Update
+from telegram import Update, BotCommand
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -11,7 +11,7 @@ from telegram.ext import (
     filters,
     ContextTypes,
     CallbackContext,
-    JobQueue
+    PicklePersistence
 )
 from dotenv import load_dotenv
 
@@ -25,15 +25,6 @@ logger = logging.getLogger(__name__)
 # Կարգավորումներ
 load_dotenv()
 TOKEN = os.getenv('TELEGRAM_TOKEN')
-
-class CustomJobQueue(JobQueue):
-    @property
-    def application(self):
-        return self._application
-    
-    @application.setter
-    def application(self, value):
-        self._application = value
 
 # Տվյալների պահպանում
 def save_data(data):
@@ -67,7 +58,7 @@ def get_dash_price():
 # Ստանալ փոխանցումները Blockchair-ից
 def get_transactions(address):
     try:
-        url = f"https://api.blockchair.com/dash/dashboards/address/{address}?limit=10"
+        url = f"https://api.blockchair.com/dash/dashboards/address/{address}?limit=1"
         response = requests.get(url, timeout=15)
         if response.status_code == 200:
             return response.json().get('data', {}).get(address, {}).get('transactions', [])
@@ -108,57 +99,62 @@ async def handle_dash_address(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # Ստուգել փոխանցումները
 async def check_transactions(context: CallbackContext):
-    try:
-        data = load_data()
-        dash_price = get_dash_price()
-        
-        for user_id, address in data['users'].items():
-            try:
-                txs = get_transactions(address)
-                if not txs:
-                    continue
-                    
-                latest_tx = txs[0]
-                tx_key = f"{user_id}_{latest_tx['hash']}"
+    data = load_data()
+    dash_price = get_dash_price()
+    
+    for user_id, address in data['users'].items():
+        try:
+            txs = get_transactions(address)
+            if not txs:
+                continue
                 
-                if tx_key not in data['transactions']:
-                    data['transactions'][tx_key] = True
-                    save_data(data)
-                    
-                    notification = create_notification(latest_tx, dash_price)
-                    await context.bot.send_message(
-                        chat_id=int(user_id),
-                        text=notification,
-                        parse_mode='MarkdownV2',
-                        disable_web_page_preview=True
-                    )
-            except Exception as e:
-                logger.error(f"Սխալ օգտատիրոջ {user_id} համար: {e}")
-    except Exception as e:
-        logger.error(f"Ընդհանուր սխալ check_transactions-ում: {e}")
+            latest_tx = txs[0]
+            tx_key = f"{user_id}_{latest_tx['hash']}"
+            
+            if tx_key not in data['transactions']:
+                data['transactions'][tx_key] = True
+                save_data(data)
+                
+                notification = create_notification(latest_tx, dash_price)
+                await context.bot.send_message(
+                    chat_id=int(user_id),
+                    text=notification,
+                    parse_mode='MarkdownV2',
+                    disable_web_page_preview=True
+                )
+        except Exception as e:
+            logger.error(f"Սխալ օգտատիրոջ {user_id} համար: {e}")
 
+async def post_init(application: Application):
+    await application.bot.set_my_commands([
+        BotCommand("start", "Սկսել բոտը"),
+    ])
+
+# Գործարկել բոտը
 def main():
-    try:
-        # Ստեղծում ենք հավելվածը
-        application = Application.builder().token(TOKEN).build()
-        
-        # Weak reference սխալի շրջանցում
-        application.job_queue = CustomJobQueue()
-        application.job_queue.application = application
-        application.job_queue.set_application(application)
-        
-        # Հրամաններ
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_dash_address))
-        
-        # Աշխատանքային հերթ
-        application.job_queue.run_repeating(check_transactions, interval=30.0, first=5.0)
-        
-        logger.info("Բոտը գործարկվում է...")
-        application.run_polling()
-        
-    except Exception as e:
-        logger.error(f"Կրիտիկական սխալ բոտի գործարկման ժամանակ: {e}")
+    # Ստեղծում ենք հավելվածը
+    persistence = PicklePersistence(filepath='data/bot_persistence')
+    application = (
+        Application.builder()
+        .token(TOKEN)
+        .persistence(persistence)
+        .post_init(post_init)
+        .build()
+    )
+    
+    # Weak reference սխալի շրջանցում Python 3.13-ի համար
+    application.job_queue._application = application
+    
+    # Հրամաններ
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_dash_address))
+    
+    # Աշխատանքային հերթ
+    application.job_queue.run_repeating(check_transactions, interval=30.0, first=5.0)
+    
+    # Միշտ օգտագործում ենք polling
+    logger.info("Բոտը գործարկվում է polling ռեժիմով...")
+    application.run_polling()
 
 if __name__ == "__main__":
     main()

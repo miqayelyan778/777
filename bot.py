@@ -1,11 +1,10 @@
 import os
 import json
-import time
 import requests
 from datetime import datetime
 from dotenv import load_dotenv
-from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, JobQueue
 
 # Keep alive for Render.com
 from keep_alive import keep_alive
@@ -20,7 +19,6 @@ BLOCKCHAIR_API_KEY = os.getenv('BLOCKCHAIR_API_KEY')
 STORAGE_FILE = 'storage.json'
 CHECK_INTERVAL = 30  # seconds
 
-# Initialize storage
 def load_storage():
     try:
         with open(STORAGE_FILE, 'r') as f:
@@ -32,22 +30,18 @@ def save_storage(data):
     with open(STORAGE_FILE, 'w') as f:
         json.dump(data, f, indent=2)
 
-# Dash address validation
 def is_valid_dash_address(address):
     return address.startswith('X') and len(address) == 34
 
-# Blockchair API functions
 def get_dash_transactions(address):
     url = f"https://api.blockchair.com/dash/dashboards/address/{address}"
     if BLOCKCHAIR_API_KEY:
         url += f"?key={BLOCKCHAIR_API_KEY}"
     
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=10)
         data = response.json()
-        if 'data' in data and address in data['data']:
-            return data['data'][address]['transactions']
-        return []
+        return data.get('data', {}).get(address, {}).get('transactions', [])
     except Exception as e:
         print(f"Error fetching transactions: {e}")
         return []
@@ -58,14 +52,13 @@ def get_dash_price():
         url += f"?key={BLOCKCHAIR_API_KEY}"
     
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=10)
         data = response.json()
-        return data['data']['market_price_usd']
+        return data.get('data', {}).get('market_price_usd', 0)
     except Exception as e:
         print(f"Error fetching Dash price: {e}")
         return 0
 
-# Telegram bot handlers
 async def start(update: Update, context: CallbackContext):
     await update.message.reply_text(
         "👋 Welcome to Dash Notifier Bot!\n\n"
@@ -76,7 +69,7 @@ async def start(update: Update, context: CallbackContext):
 
 async def handle_address(update: Update, context: CallbackContext):
     address = update.message.text.strip()
-    chat_id = update.message.chat_id
+    chat_id = update.message.chat.id
     
     storage = load_storage()
     
@@ -84,13 +77,11 @@ async def handle_address(update: Update, context: CallbackContext):
         await update.message.reply_text("❌ Invalid Dash address. Please send a valid Dash address starting with 'X'.")
         return
     
-    # Check if address is already registered by another user
     for user_id, user_data in storage['users'].items():
         if user_data.get('address') == address and str(user_id) != str(chat_id):
             await update.message.reply_text("❌ This address is already being monitored by another user.")
             return
     
-    # Save or update address
     if str(chat_id) not in storage['users']:
         storage['users'][str(chat_id)] = {
             'address': address,
@@ -115,21 +106,14 @@ async def check_transactions(context: CallbackContext):
         if not transactions:
             continue
         
-        # Get the most recent transaction
         latest_tx = transactions[0]
         
-        # Check if this is a new transaction
         if user_data['last_tx'] != latest_tx['hash']:
-            # Store notification to avoid duplicates
             if latest_tx['hash'] not in user_data['notifications']:
-                # Send notification
                 await send_notification(context.bot, chat_id, latest_tx, dash_price)
-                
-                # Update storage
                 storage['users'][chat_id]['last_tx'] = latest_tx['hash']
                 storage['users'][chat_id]['notifications'].append(latest_tx['hash'])
                 
-                # Keep only the last 100 notifications
                 if len(storage['users'][chat_id]['notifications']) > 100:
                     storage['users'][chat_id]['notifications'] = storage['users'][chat_id]['notifications'][-100:]
     
@@ -161,18 +145,14 @@ async def send_notification(bot, chat_id, transaction, dash_price):
     )
 
 def main():
-    # Create bot
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_address))
     
-    # Start periodic checking
     job_queue = application.job_queue
     job_queue.run_repeating(check_transactions, interval=CHECK_INTERVAL, first=0)
     
-    # Start bot
     application.run_polling()
 
 if __name__ == '__main__':

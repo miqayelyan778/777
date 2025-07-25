@@ -3,7 +3,7 @@ import json
 import requests
 import logging
 from datetime import datetime
-from telegram import Update, BotCommand
+from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -57,7 +57,7 @@ def get_dash_price():
         logger.error(f"Գնի ստացման սխալ: {e}")
         return None
 
-# Ստանալ փոխանցումները Blockchair-ից
+# Ստանալ փոխանցումները
 def get_transactions(address):
     try:
         url = f"https://api.blockchair.com/dash/dashboards/address/{address}?limit=10"
@@ -67,42 +67,41 @@ def get_transactions(address):
             if data.get('data') and address in data['data']:
                 return data['data'][address].get('transactions', [])
         logger.warning(f"Չստացվեց ստանալ տվյալներ {address} հասցեի համար")
+        return []
     except Exception as e:
-        logger.error(f"Փոխանցումների ստացման սխալ: {e}")
-    return []
+        logger.error(f"API սխալ: {e}")
+        return []
 
 # Ստեղծել ծանուցում
 def create_notification(tx, dash_price):
     amount = sum(out['value'] for out in tx['outputs']) / 1e8
     usd_value = amount * dash_price if dash_price else 0
     time_str = datetime.fromtimestamp(tx['time']).strftime('%Y-%m-%d %H:%M')
-    
     return (
-        f"📥 Նոր փոխանցում #{tx['index'] + 1}\n\n"
+        f"📥 Նոր փոխանցում #{tx['index'] + 1}\n"
         f"💰 Գումար: {amount:.8f} DASH (~${usd_value:.2f})\n"
         f"⏰ Ժամ: {time_str}\n"
-        f"🔗 [Դիտել Blockchair-ում](https://blockchair.com/dash/transaction/{tx['hash']})\n"
-        f"🧾 TxID: `{tx['hash'][:8]}...`"
+        f"🔗 TxID: {tx['hash'][:8]}..."
     )
 
 # Հրամաններ
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Բարի գալուստ! Ուղարկեք ձեր DASH հասցեն:")
+    await update.message.reply_text("👋 Բարի գալուստ! Ուղարկեք ձեր DASH հասցեն (սկսում է X-ով):")
 
 async def handle_dash_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     address = update.message.text.strip()
     
     if not is_valid_dash_address(address):
-        await update.message.reply_text("❌ Սխալ հասցե: Փորձեք կրկին")
+        await update.message.reply_text("❌ Սխալ հասցեի ֆորմատ: Հասցեն պետք է սկսվի X-ով և ունենա 34 նիշ")
         return
     
     data = load_data()
     data['users'][str(user_id)] = address
     save_data(data)
-    await update.message.reply_text(f"✅ Հասցեն գրանցված է:\n`{address}`", parse_mode='MarkdownV2')
+    await update.message.reply_text(f"✅ Հասցեն գրանցված է:\n`{address}`\n\nԵս կծանուցեմ ձեզ նոր փոխանցումների մասին:", parse_mode='MarkdownV2')
 
-# Ստուգել փոխանցումները
+# Ստուգել փոխանցումները (պարզեցված տարբերակ)
 async def check_transactions(context: CallbackContext):
     try:
         data = load_data()
@@ -128,8 +127,7 @@ async def check_transactions(context: CallbackContext):
                     await context.bot.send_message(
                         chat_id=int(user_id),
                         text=notification,
-                        parse_mode='MarkdownV2',
-                        disable_web_page_preview=True
+                        parse_mode='MarkdownV2'
                     )
             except Exception as e:
                 logger.error(f"Սխալ օգտատիրոջ {user_id} համար: {e}")
@@ -138,22 +136,17 @@ async def check_transactions(context: CallbackContext):
 
 def main():
     try:
-        # Ստեղծում ենք հավելվածը
-        persistence = PicklePersistence(filepath='data/bot_persistence')
-        application = (
-            Application.builder()
-            .token(TOKEN)
-            .persistence(persistence)
-            .build()
-        )
+        # Ստեղծում ենք հավելվածը առանց persistence
+        application = Application.builder().token(TOKEN).build()
         
         # Հրամաններ
         application.add_handler(CommandHandler("start", start))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_dash_address))
         
-        # Աշխատանքային հերթ
-        application.job_queue.run_repeating(
-            check_transactions,
+        # Աշխատանքային հերթ (պարզեցված)
+        job_queue = application.job_queue
+        job_queue.run_repeating(
+            callback=check_transactions,
             interval=300.0,  # 5 րոպե
             first=10.0
         )
@@ -162,7 +155,7 @@ def main():
         application.run_polling()
         
     except Exception as e:
-        logger.error(f"Կրիտիկական սխալ բոտի գործարկման ժամանակ: {e}")
+        logger.error(f"Կրիտիկական սխալ: {e}")
 
 if __name__ == "__main__":
     main()

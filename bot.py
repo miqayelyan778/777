@@ -4,7 +4,7 @@ import requests
 from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, JobQueue
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, JobQueue
 
 # Keep alive for Render.com
 from keep_alive import keep_alive
@@ -63,31 +63,29 @@ def get_dash_price():
         return 0
 
 # Telegram bot handlers
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text(
-        "👋 Բարի գալուստ Dash Notifier Bot!\n\n"
-        "Խնդրում եմ ուղարկեք ձեր Dash դրամապանակի հասցեն, և ես ձեզ կծանուցեմ\n"
-        "երբ նոր գործարքներ ստանաք:\n\n"
-        "Ուղարկեք ձեր հասցեն այսպես՝ XonCSL19SseRbeThdAJAeRju1jEWke1gSc"
+async def start(update: Update, context: CallbackContext):
+    await update.message.reply_text(
+        "👋 Welcome to Dash Notifier Bot!\n\n"
+        "Please send me your Dash wallet address and I'll notify you "
+        "whenever you receive new transactions.\n\n"
+        "Just send your Dash address like this: XonCSL19SseRbeThdAJAeRju1jEWke1gSc"
     )
 
-def handle_address(update: Update, context: CallbackContext):
+async def handle_address(update: Update, context: CallbackContext):
     address = update.message.text.strip()
-    chat_id = update.message.chat_id
+    chat_id = update.message.chat.id
     
     storage = load_storage()
     
     if not is_valid_dash_address(address):
-        update.message.reply_text("❌ Սխալ Dash հասցե: Խնդրում եմ ուղարկեք հասցե, որը սկսվում է 'X'-ով:")
+        await update.message.reply_text("❌ Invalid Dash address. Please send a valid Dash address starting with 'X'.")
         return
     
-    # Check if address is already registered
     for user_id, user_data in storage['users'].items():
         if user_data.get('address') == address and str(user_id) != str(chat_id):
-            update.message.reply_text("❌ Այս հասցեն արդեն գրանցված է մեկ այլ օգտատիրոջ կողմից:")
+            await update.message.reply_text("❌ This address is already being monitored by another user.")
             return
     
-    # Save or update address
     if str(chat_id) not in storage['users']:
         storage['users'][str(chat_id)] = {
             'address': address,
@@ -99,9 +97,9 @@ def handle_address(update: Update, context: CallbackContext):
         storage['users'][str(chat_id)]['last_tx'] = None
     
     save_storage(storage)
-    update.message.reply_text(f"✅ Հաջողություն: Ես կծանուցեմ ձեզ նոր գործարքների մասին այս հասցեի համար:\n{address}")
+    await update.message.reply_text(f"✅ Success! I'll notify you about new transactions to:\n{address}")
 
-def check_transactions(context: CallbackContext):
+async def check_transactions(context: CallbackContext):
     storage = load_storage()
     dash_price = get_dash_price()
     
@@ -116,7 +114,7 @@ def check_transactions(context: CallbackContext):
         
         if user_data['last_tx'] != latest_tx['hash']:
             if latest_tx['hash'] not in user_data['notifications']:
-                send_notification(context.bot, chat_id, latest_tx, dash_price)
+                await send_notification(context.bot, chat_id, latest_tx, dash_price)
                 storage['users'][chat_id]['last_tx'] = latest_tx['hash']
                 storage['users'][chat_id]['notifications'].append(latest_tx['hash'])
                 
@@ -125,7 +123,7 @@ def check_transactions(context: CallbackContext):
     
     save_storage(storage)
 
-def send_notification(bot, chat_id, transaction, dash_price):
+async def send_notification(bot, chat_id, transaction, dash_price):
     tx_time = datetime.fromtimestamp(transaction['time']).strftime('%Y-%m-%d %H:%M')
     dash_amount = transaction['balance_change'] / 100000000
     usd_value = dash_amount * dash_price
@@ -133,17 +131,17 @@ def send_notification(bot, chat_id, transaction, dash_price):
     tx_count = len(get_dash_transactions(transaction['address']))
     
     message = (
-        f"📥 Նոր Գործարք #{tx_count}\n\n"
-        f"💰 Գումար՝ {dash_amount:.8f} DASH (~{usd_value:.2f}$)\n"
-        f"⏰ Ժամանակ՝ {tx_time}\n"
-        f"🔗 [Դիտել Blockchair-ում]({tx_link})\n"
+        f"📥 New Transaction #{tx_count}\n\n"
+        f"💰 Amount: {dash_amount:.8f} DASH (~{usd_value:.2f}$)\n"
+        f"⏰ Time: {tx_time}\n"
+        f"🔗 [View on Blockchair]({tx_link})\n"
         f"🧾 TxID: {transaction['hash'][:8]}..."
     )
     
-    keyboard = [[InlineKeyboardButton("Դիտել Գործարքը", url=tx_link)]]
+    keyboard = [[InlineKeyboardButton("View Transaction", url=tx_link)]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    bot.send_message(
+    await bot.send_message(
         chat_id=chat_id,
         text=message,
         reply_markup=reply_markup,
@@ -151,23 +149,15 @@ def send_notification(bot, chat_id, transaction, dash_price):
     )
 
 def main():
-    if not TELEGRAM_TOKEN:
-        print("❌ Սխալ: TELEGRAM_BOT_TOKEN environment փոփոխականը սահմանված չէ!")
-        print("Խնդրում եմ ստացեք ձեր token-ը @BotFather-ից և ավելացրեք Render.com-ի environment փոփոխականներում")
-        return
-
-    updater = Updater(TELEGRAM_TOKEN, use_context=True)
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    dp = updater.dispatcher
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_address))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_address))
     
-    jq = updater.job_queue
-    jq.run_repeating(check_transactions, interval=CHECK_INTERVAL, first=0)
+    job_queue = application.job_queue
+    job_queue.run_repeating(check_transactions, interval=CHECK_INTERVAL, first=0)
     
-    print("🤖 Բոտը գործարկվում է...")
-    updater.start_polling()
-    updater.idle()
+    application.run_polling()
 
 if __name__ == '__main__':
     main()

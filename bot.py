@@ -10,8 +10,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
     ContextTypes,
-    CallbackContext,
-    PicklePersistence
+    CallbackContext
 )
 from dotenv import load_dotenv
 
@@ -26,11 +25,9 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 
-# Ստեղծել data թղթապանակը
-os.makedirs('data', exist_ok=True)
-
 # Տվյալների պահպանում
 def save_data(data):
+    os.makedirs('data', exist_ok=True)
     with open('data/storage.json', 'w') as f:
         json.dump(data, f, indent=4)
 
@@ -66,7 +63,6 @@ def get_transactions(address):
             data = response.json()
             if data.get('data') and address in data['data']:
                 return data['data'][address].get('transactions', [])
-        logger.warning(f"Չստացվեց ստանալ տվյալներ {address} հասցեի համար")
         return []
     except Exception as e:
         logger.error(f"API սխալ: {e}")
@@ -101,7 +97,7 @@ async def handle_dash_address(update: Update, context: ContextTypes.DEFAULT_TYPE
     save_data(data)
     await update.message.reply_text(f"✅ Հասցեն գրանցված է:\n`{address}`\n\nԵս կծանուցեմ ձեզ նոր փոխանցումների մասին:", parse_mode='MarkdownV2')
 
-# Ստուգել փոխանցումները (պարզեցված տարբերակ)
+# Ստուգել փոխանցումները
 async def check_transactions(context: CallbackContext):
     try:
         data = load_data()
@@ -136,17 +132,20 @@ async def check_transactions(context: CallbackContext):
 
 def main():
     try:
-        # Ստեղծում ենք հավելվածը առանց persistence
+        # Ստեղծում ենք հավելվածը
         application = Application.builder().token(TOKEN).build()
+        
+        # Weak reference սխալի շրջանցում
+        if hasattr(application.job_queue, '_application'):
+            application.job_queue._application = application
         
         # Հրամաններ
         application.add_handler(CommandHandler("start", start))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_dash_address))
         
-        # Աշխատանքային հերթ (պարզեցված)
-        job_queue = application.job_queue
-        job_queue.run_repeating(
-            callback=check_transactions,
+        # Աշխատանքային հերթ
+        application.job_queue.run_repeating(
+            check_transactions,
             interval=300.0,  # 5 րոպե
             first=10.0
         )

@@ -10,7 +10,8 @@ from telegram.ext import (
     MessageHandler,
     filters,
     ContextTypes,
-    CallbackContext
+    CallbackContext,
+    JobQueue
 )
 from dotenv import load_dotenv
 
@@ -24,6 +25,15 @@ logger = logging.getLogger(__name__)
 # Կարգավորումներ
 load_dotenv()
 TOKEN = os.getenv('TELEGRAM_TOKEN')
+
+class FixedJobQueue(JobQueue):
+    @property
+    def application(self):
+        return self._application
+    
+    @application.setter
+    def application(self, value):
+        self._application = value
 
 # Տվյալների պահպանում
 def save_data(data):
@@ -136,8 +146,9 @@ def main():
         application = Application.builder().token(TOKEN).build()
         
         # Weak reference սխալի շրջանցում
-        if hasattr(application.job_queue, '_application'):
-            application.job_queue._application = application
+        application.job_queue = FixedJobQueue()
+        application.job_queue.application = application
+        application.job_queue.set_application(application)
         
         # Հրամաններ
         application.add_handler(CommandHandler("start", start))

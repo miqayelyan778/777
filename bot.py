@@ -3,7 +3,7 @@ import json
 import requests
 import logging
 from datetime import datetime
-from telegram import Update
+from telegram import Update, BotCommand
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -11,6 +11,7 @@ from telegram.ext import (
     filters,
     ContextTypes,
     CallbackContext,
+    PicklePersistence,
     JobQueue
 )
 from dotenv import load_dotenv
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 
+# Weak reference սխալի լուծում
 class FixedJobQueue(JobQueue):
     @property
     def application(self):
@@ -64,7 +66,7 @@ def get_dash_price():
         logger.error(f"Գնի ստացման սխալ: {e}")
         return None
 
-# Ստանալ փոխանցումները
+# Ստանալ փոխանցումները Blockchair-ից
 def get_transactions(address):
     try:
         url = f"https://api.blockchair.com/dash/dashboards/address/{address}?limit=10"
@@ -73,6 +75,7 @@ def get_transactions(address):
             data = response.json()
             if data.get('data') and address in data['data']:
                 return data['data'][address].get('transactions', [])
+        logger.warning(f"Չստացվեց ստանալ տվյալներ {address} հասցեի համար")
         return []
     except Exception as e:
         logger.error(f"API սխալ: {e}")
@@ -84,10 +87,11 @@ def create_notification(tx, dash_price):
     usd_value = amount * dash_price if dash_price else 0
     time_str = datetime.fromtimestamp(tx['time']).strftime('%Y-%m-%d %H:%M')
     return (
-        f"📥 Նոր փոխանցում #{tx['index'] + 1}\n"
+        f"📥 Նոր փոխանցում #{tx['index'] + 1}\n\n"
         f"💰 Գումար: {amount:.8f} DASH (~${usd_value:.2f})\n"
         f"⏰ Ժամ: {time_str}\n"
-        f"🔗 TxID: {tx['hash'][:8]}..."
+        f"🔗 [Դիտել Blockchair-ում](https://blockchair.com/dash/transaction/{tx['hash']})\n"
+        f"🧾 TxID: `{tx['hash'][:8]}...`"
     )
 
 # Հրամաններ
@@ -133,17 +137,34 @@ async def check_transactions(context: CallbackContext):
                     await context.bot.send_message(
                         chat_id=int(user_id),
                         text=notification,
-                        parse_mode='MarkdownV2'
+                        parse_mode='MarkdownV2',
+                        disable_web_page_preview=True
                     )
             except Exception as e:
                 logger.error(f"Սխալ օգտատիրոջ {user_id} համար: {e}")
     except Exception as e:
         logger.error(f"Ընդհանուր սխալ check_transactions-ում: {e}")
 
+async def post_init(application: Application):
+    await application.bot.set_my_commands([
+        BotCommand("start", "Սկսել բոտը"),
+    ])
+
+# Գործարկել բոտը
 def main():
     try:
+        # Ստեղծում ենք 'data' թղթապանակը
+        os.makedirs('data', exist_ok=True)
+        
         # Ստեղծում ենք հավելվածը
-        application = Application.builder().token(TOKEN).build()
+        persistence = PicklePersistence(filepath='data/bot_persistence')
+        application = (
+            Application.builder()
+            .token(TOKEN)
+            .persistence(persistence)
+            .post_init(post_init)
+            .build()
+        )
         
         # Weak reference սխալի շրջանցում
         application.job_queue = FixedJobQueue()
@@ -165,7 +186,7 @@ def main():
         application.run_polling()
         
     except Exception as e:
-        logger.error(f"Կրիտիկական սխալ: {e}")
+        logger.error(f"Կրիտիկական սխալ բոտի գործարկման ժամանակ: {e}")
 
 if __name__ == "__main__":
     main()

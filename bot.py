@@ -18,7 +18,7 @@ load_dotenv()
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 RENDER = os.getenv('RENDER', '').lower() == 'true'
 
-# Տվյալների պահպանում JSON ֆայլում
+# Տվյալների պահպանում
 def save_data(data):
     os.makedirs('data', exist_ok=True)
     with open('data/storage.json', 'w') as f:
@@ -29,7 +29,7 @@ def load_data():
         with open('data/storage.json', 'r') as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return {"users": {}, "cache": {}}
+        return {"users": {}, "transactions": {}}
 
 # DASH հասցեի վավերացում
 def is_valid_dash_address(address):
@@ -44,7 +44,7 @@ def get_dash_price():
         response = requests.get(url, timeout=10)
         return response.json().get('dash', {}).get('usd')
     except Exception as e:
-        print(f"Error fetching price: {e}")
+        print(f"Գնի ստացման սխալ: {e}")
         return None
 
 # Ստանալ փոխանցումները Blockchair-ից
@@ -54,12 +54,9 @@ def get_transactions(address):
         response = requests.get(url, timeout=15)
         if response.status_code == 200:
             return response.json().get('data', {}).get(address, {}).get('transactions', [])
-        elif response.status_code == 429:  # Too Many Requests
-            time.sleep(10)
-            return []
     except Exception as e:
-        print(f"Error fetching transactions: {e}")
-        return []
+        print(f"Փոխանցումների ստացման սխալ: {e}")
+    return []
 
 # Ստեղծել ծանուցում
 def create_notification(tx, dash_price):
@@ -68,16 +65,16 @@ def create_notification(tx, dash_price):
     time_str = datetime.fromtimestamp(tx['time']).strftime('%Y-%m-%d %H:%M')
     
     return (
-        f"📥 New Transaction #{tx['index'] + 1}\n\n"
-        f"💰 Amount: {amount:.8f} DASH (~{usd_value:.2f}$)\n"
-        f"⏰ Time: {time_str}\n"
-        f"🔗 [View on Blockchair](https://blockchair.com/dash/transaction/{tx['hash']})\n"
+        f"📥 Նոր փոխանցում #{tx['index'] + 1}\n\n"
+        f"💰 Գումար: {amount:.8f} DASH (~{usd_value:.2f}$\n"
+        f"⏰ Ժամ: {time_str}\n"
+        f"🔗 [Դիտել Blockchair-ում](https://blockchair.com/dash/transaction/{tx['hash']})\n"
         f"🧾 TxID: {tx['hash'][:8]}..."
     )
 
-# Telegram հրամաններ
+# Հրամաններ
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Welcome! Send your DASH address to receive notifications")
+    await update.message.reply_text("👋 Բարի գալուստ! Ուղարկեք ձեր DASH հասցեն:")
 
 async def handle_dash_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -85,56 +82,62 @@ async def handle_dash_address(update: Update, context: ContextTypes.DEFAULT_TYPE
     data = load_data()
     
     if not is_valid_dash_address(address):
-        await update.message.reply_text("❌ Invalid address. Try again:")
+        await update.message.reply_text("❌ Սխալ հասցե: Փորձեք կրկին")
         return
     
     data['users'][str(user_id)] = address
     save_data(data)
-    await update.message.reply_text(f"✅ Address registered:\n`{address}`", parse_mode='Markdown')
+    await update.message.reply_text(f"✅ Հասցեն գրանցված է:\n`{address}`", parse_mode='Markdown')
 
-# Ստուգել նոր փոխանցումները
+# Ստուգել փոխանցումները
 async def check_transactions(context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
     dash_price = get_dash_price()
     
     for user_id, address in data['users'].items():
-        last_tx_hash = data.get("cache", {}).get(address)
-        new_txs = get_transactions(address)
-        
-        if new_txs and new_txs[0]['hash'] != last_tx_hash:
-            notification = create_notification(new_txs[0], dash_price)
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=notification,
-                parse_mode='Markdown',
-                disable_web_page_preview=True
-            )
-            # Update cache
-            data["cache"] = {address: new_txs[0]['hash']}
-            save_data(data)
+        try:
+            txs = get_transactions(address)
+            if not txs:
+                continue
+                
+            latest_tx = txs[0]
+            tx_key = f"{user_id}_{latest_tx['hash']}"
+            
+            if tx_key not in data['transactions']:
+                data['transactions'][tx_key] = True
+                save_data(data)
+                
+                notification = create_notification(latest_tx, dash_price)
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=notification,
+                    parse_mode='Markdown',
+                    disable_web_page_preview=True
+                )
+        except Exception as e:
+            print(f"Սխալ օգտատիրոջ {user_id} համար: {e}")
 
 # Գործարկել բոտը
-async def main():
+def main():
     app = Application.builder().token(TOKEN).build()
     
-    # Add handlers
+    # Հրամաններ
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_dash_address))
     
-    # Start job queue
+    # Աշխատանքային հերթ
     app.job_queue.run_repeating(check_transactions, interval=30.0, first=5.0)
     
     if RENDER:
         PORT = int(os.getenv('PORT', 10000))
-        await app.run_webhook(
+        app.run_webhook(
             listen="0.0.0.0",
             port=PORT,
             webhook_url=f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/",
-            secret_token="DASH_BOT_SECRET"
+            secret_token="DASH_SECRET_123"  # Փոխարինեք ձեր գաղտնաբառով
         )
     else:
-        await app.run_polling()
+        app.run_polling()
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    main()

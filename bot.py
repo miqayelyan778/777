@@ -5,7 +5,7 @@ import requests
 from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
 
 # Keep alive for Render.com
 from keep_alive import keep_alive
@@ -34,7 +34,6 @@ def save_storage(data):
 
 # Dash address validation
 def is_valid_dash_address(address):
-    # Basic validation - in a real app you'd want more thorough validation
     return address.startswith('X') and len(address) == 34
 
 # Blockchair API functions
@@ -67,28 +66,28 @@ def get_dash_price():
         return 0
 
 # Telegram bot handlers
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text(
+async def start(update: Update, context: CallbackContext):
+    await update.message.reply_text(
         "👋 Welcome to Dash Notifier Bot!\n\n"
         "Please send me your Dash wallet address and I'll notify you "
         "whenever you receive new transactions.\n\n"
         "Just send your Dash address like this: XonCSL19SseRbeThdAJAeRju1jEWke1gSc"
     )
 
-def handle_address(update: Update, context: CallbackContext):
+async def handle_address(update: Update, context: CallbackContext):
     address = update.message.text.strip()
     chat_id = update.message.chat_id
     
     storage = load_storage()
     
     if not is_valid_dash_address(address):
-        update.message.reply_text("❌ Invalid Dash address. Please send a valid Dash address starting with 'X'.")
+        await update.message.reply_text("❌ Invalid Dash address. Please send a valid Dash address starting with 'X'.")
         return
     
     # Check if address is already registered by another user
     for user_id, user_data in storage['users'].items():
         if user_data.get('address') == address and str(user_id) != str(chat_id):
-            update.message.reply_text("❌ This address is already being monitored by another user.")
+            await update.message.reply_text("❌ This address is already being monitored by another user.")
             return
     
     # Save or update address
@@ -103,9 +102,9 @@ def handle_address(update: Update, context: CallbackContext):
         storage['users'][str(chat_id)]['last_tx'] = None
     
     save_storage(storage)
-    update.message.reply_text(f"✅ Success! I'll notify you about new transactions to:\n{address}")
+    await update.message.reply_text(f"✅ Success! I'll notify you about new transactions to:\n{address}")
 
-def check_transactions(context: CallbackContext):
+async def check_transactions(context: CallbackContext):
     storage = load_storage()
     dash_price = get_dash_price()
     
@@ -124,27 +123,23 @@ def check_transactions(context: CallbackContext):
             # Store notification to avoid duplicates
             if latest_tx['hash'] not in user_data['notifications']:
                 # Send notification
-                send_notification(context.bot, chat_id, latest_tx, dash_price)
+                await send_notification(context.bot, chat_id, latest_tx, dash_price)
                 
                 # Update storage
                 storage['users'][chat_id]['last_tx'] = latest_tx['hash']
                 storage['users'][chat_id]['notifications'].append(latest_tx['hash'])
                 
-                # Keep only the last 100 notifications to prevent storage bloat
+                # Keep only the last 100 notifications
                 if len(storage['users'][chat_id]['notifications']) > 100:
                     storage['users'][chat_id]['notifications'] = storage['users'][chat_id]['notifications'][-100:]
     
     save_storage(storage)
 
-def send_notification(bot, chat_id, transaction, dash_price):
+async def send_notification(bot, chat_id, transaction, dash_price):
     tx_time = datetime.fromtimestamp(transaction['time']).strftime('%Y-%m-%d %H:%M')
-    dash_amount = transaction['balance_change'] / 100000000  # Convert from satoshis
+    dash_amount = transaction['balance_change'] / 100000000
     usd_value = dash_amount * dash_price
-    
-    # Create the transaction link
     tx_link = f"https://blockchair.com/dash/transaction/{transaction['hash']}"
-    
-    # Count total transactions for this address (would need to be stored)
     tx_count = len(get_dash_transactions(transaction['address']))
     
     message = (
@@ -158,7 +153,7 @@ def send_notification(bot, chat_id, transaction, dash_price):
     keyboard = [[InlineKeyboardButton("View Transaction", url=tx_link)]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    bot.send_message(
+    await bot.send_message(
         chat_id=chat_id,
         text=message,
         reply_markup=reply_markup,
@@ -167,20 +162,18 @@ def send_notification(bot, chat_id, transaction, dash_price):
 
 def main():
     # Create bot
-    updater = Updater(TELEGRAM_TOKEN)
-    dispatcher = updater.dispatcher
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
     
     # Add handlers
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_address))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_address))
     
     # Start periodic checking
-    job_queue = updater.job_queue
+    job_queue = application.job_queue
     job_queue.run_repeating(check_transactions, interval=CHECK_INTERVAL, first=0)
     
     # Start bot
-    updater.start_polling()
-    updater.idle()
+    application.run_polling()
 
 if __name__ == '__main__':
     main()

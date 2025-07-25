@@ -9,8 +9,7 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     filters,
-    ContextTypes,
-    JobQueue
+    ContextTypes
 )
 from dotenv import load_dotenv
 
@@ -21,6 +20,7 @@ RENDER = os.getenv('RENDER', '').lower() == 'true'
 
 # Տվյալների պահպանում JSON ֆայլում
 def save_data(data):
+    os.makedirs('data', exist_ok=True)
     with open('data/storage.json', 'w') as f:
         json.dump(data, f, indent=4)
 
@@ -114,16 +114,8 @@ async def check_transactions(context: ContextTypes.DEFAULT_TYPE):
             save_data(data)
 
 # Գործարկել բոտը
-def main():
-    # Create data directory if not exists
-    os.makedirs('data', exist_ok=True)
-    
+async def main():
     app = Application.builder().token(TOKEN).build()
-    
-    # Verify JobQueue is initialized
-    if not hasattr(app, 'job_queue'):
-        print("❌ JobQueue not initialized! Ensure 'python-telegram-bot[job-queue]' is installed")
-        return
     
     # Add handlers
     app.add_handler(CommandHandler("start", start))
@@ -134,16 +126,15 @@ def main():
     
     if RENDER:
         PORT = int(os.getenv('PORT', 10000))
-        # ՎԻՇՏ ՕՐԻՆԱԿ
-app.run_webhook(
-    listen="0.0.0.0",
-    port=int(os.getenv('PORT', 10000)),
-    webhook_url=f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/",
-    secret_token="YOUR_SECRET"
-)
+        await app.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            webhook_url=f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/",
+            secret_token="DASH_BOT_SECRET"
+        )
     else:
-        app.run_polling()
+        await app.run_polling()
 
 if __name__ == "__main__":
-    print("🚀 Starting DASH Notification Bot...")
-    main()
+    import asyncio
+    asyncio.run(main())

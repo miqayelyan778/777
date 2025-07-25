@@ -134,12 +134,13 @@ def main():
     
     if RENDER:
         PORT = int(os.getenv('PORT', 10000))
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            webhook_url=f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/"  # Render-ն ավտոմատ կլրացնի
-            secret_token="DASH_BOT_SECRET"
-        )
+        # ՎԻՇՏ ՕՐԻՆԱԿ
+app.run_webhook(
+    listen="0.0.0.0",
+    port=int(os.getenv('PORT', 10000)),
+    webhook_url=f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/",
+    secret_token="YOUR_SECRET"
+)
     else:
         app.run_polling()
 
